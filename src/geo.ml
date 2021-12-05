@@ -5,7 +5,7 @@ open! Vdom
 open! Bootstrap
 open! Bootstrap.Basic
 open Cohttp
-open Cohttp_lwt_xhr
+open Cohttp_lwt_jsoo
 module Body = Cohttp_lwt.Body
 open Lwt.Syntax
 
@@ -43,9 +43,9 @@ let get_location () =
   in
   let options =
     object%js
-      val maximumAge = Time.Span.of_min 10.0 |> Time.Span.to_ms |> Float.to_int
+      val maximumAge = Time.Span.(of_min 10.0 |> to_ms) |> Float.to_int
 
-      val timeout = Time.Span.of_sec 10.0 |> Time.Span.to_ms |> Float.to_int
+      val timeout = Time.Span.(of_sec 10.0 |> to_ms) |> Float.to_int
     end
   in
   let () = window##.navigator##.geolocation##getCurrentPosition on_success on_error options in
@@ -124,7 +124,7 @@ let component =
         | Fetching_search
         | Confirming_search of confirm_search
         | Fetching_weather
-        | Completed
+        | Completed         of string
       [@@deriving sexp, equal]
 
       type t = {
@@ -141,8 +141,14 @@ let component =
         | Fetching_geo
         | Fetching_search   of string
         | Confirming_search of confirm_search
-        | Fetching_weather  of Position.t
-        | Fetched_weather   of Weather.t
+        | Fetching_weather  of {
+            place_name: string;
+            position: Position.t;
+          }
+        | Fetched_weather   of {
+            place_name: string;
+            weather: Weather.t;
+          }
         | Errored           of Error.t
       [@@deriving sexp_of]
     end
@@ -157,7 +163,9 @@ let component =
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
           let+ result = get_location () in
           (match result with
-          | Ok position -> Action.Fetching_weather position
+          | Ok position ->
+            Action.Fetching_weather
+              { position; place_name = sprintf "%.3f,%.3f" position.latitude position.longitude }
           | Error err -> Action.Errored err)
           |> inject
           |> schedule_event);
@@ -172,16 +180,17 @@ let component =
           |> schedule_event);
       { weather = Ok None; status = Fetching_search }
     | Confirming_search x -> { weather = Ok None; status = Confirming_search x }
-    | Fetching_weather { longitude; latitude } ->
+    | Fetching_weather { place_name; position = { longitude; latitude } } ->
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
           let+ result = Weather.get_weather ~longitude ~latitude in
           (match result with
-          | Ok weather -> Action.Fetched_weather weather
+          | Ok weather -> Action.Fetched_weather { place_name; weather }
           | Error err -> Action.Errored err)
           |> inject
           |> schedule_event);
       { weather = Ok None; status = Fetching_weather }
-    | Fetched_weather weather -> { weather = Ok (Some weather); status = Completed }
+    | Fetched_weather { place_name; weather } ->
+      { weather = Ok (Some weather); status = Completed place_name }
     | Errored err -> { weather = Error err; status = Blank_geo }
 
     let compute ~inject (() : Input.t) (model : Model.t) =
@@ -269,7 +278,9 @@ let component =
         | Confirming_search { feature = { place_name; center = longitude, latitude }; attribution; query }
           ->
           let handler_geo _evt = inject Action.Fetching_geo in
-          let handler_yes _evt = inject (Action.Fetching_weather { longitude; latitude }) in
+          let handler_yes _evt =
+            inject (Action.Fetching_weather { place_name; position = { longitude; latitude } })
+          in
           let handler_no _evt = inject (Action.Blank_search query) in
           Node.div []
             [
@@ -298,14 +309,15 @@ let component =
           Node.div
             Attr.[ classes [ "spinner-border"; "text-success" ]; create "role" "status" ]
             [ Node.span Attr.[ class_ "visually-hidden" ] [ Node.text "Loading..." ] ]
-        | Completed ->
+        | Completed place_name ->
           let handler _evt = inject Action.Blank_geo in
           Node.div []
             [
               Icon.svg Check_lg ~container:Span Attr.[ class_ "text-success" ];
               Node.button
-                Attr.[ classes [ "btn"; "btn-light"; "shadow-sm"; "p-1"; "ms-2" ]; on_click handler ]
-                [ Icon.svg Pencil_square [] ];
+                Attr.[ classes [ "btn"; "btn-light"; "shadow-sm"; "p-1"; "mx-2" ]; on_click handler ]
+                [ Icon.svg ~container:Span Pencil_square []; Node.text "Edit" ];
+              Node.span [] [ Node.text place_name ];
             ]
       in
       let node =

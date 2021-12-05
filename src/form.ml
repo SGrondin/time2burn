@@ -53,7 +53,7 @@ let how_long_rev ~num_slices { weather; skin_type; spf } =
     | 0 -> time
     | n -> Time.add time (Time.Span.of_min Float.(of_int n * slice_minutes))
   in
-  let skin_type = Skin_type.Fitzpatrick.to_coeff skin_type in
+  let skin_type = Skin_type.Fitzpatrick.coeff skin_type in
   let spf = Spf.Levels.to_coeff spf in
   let slices =
     let rec loop acc : Weather.hourly list -> slice list = function
@@ -114,43 +114,84 @@ let component =
 
     let apply_action ~inject:_ ~schedule_event:_ (_subforms : Input.t) (prev : Model.t) _action = prev
 
-    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; data } : Input.t) (_model : Model.t) =
-      let make_section title nodes =
-        Node.div Attr.[ classes [ "my-4" ] ] (Node.h5 Attr.[ class_ "pb-1" ] [ Node.text title ] :: nodes)
+    let get_results data =
+      let format_info = function
+        | [] -> None
+        | ll -> List.map ll ~f:(fun s -> Node.li [] [ Node.text s ]) |> Node.ul [] |> Option.return
       in
-      let chart =
-        Option.value_map data ~default:Node.none ~f:(fun subform_data ->
-            let going_outside, points = best_fit_how_long_rev subform_data in
-            let ttb =
-              match going_outside, points with
-              | Some _, { total_at_start; _ } :: _ when Float.( < ) total_at_start 100.0 ->
+      Option.map data ~f:(fun subform_data ->
+          let going_outside, points = best_fit_how_long_rev subform_data in
+          let ttb =
+            match going_outside, points with
+            | Some _, { total_at_start; _ } :: _ when Float.( < ) total_at_start 95.0 ->
+              let alert =
                 Node.div
                   Attr.[ classes [ "alert"; "alert-success" ]; style Css_gen.(max_width (`Px 650)) ]
                   [ Node.text "You should be fine!" ]
-              | Some start, _ :: { slice = { dt = burn; _ }; _ } :: _ ->
+              in
+              let info =
+                match subform_data.spf with
+                | Spf.Levels.SPF_0 -> []
+                | _ ->
+                  [
+                    "Make sure to reapply sunscreen every 2 hours";
+                    "Reapply sunscreen after swimming or excessive sweating";
+                    "With these precautions you can spend the rest of the day out in the sun, enjoy! \
+                     ☀️";
+                  ]
+              in
+              [ Some alert; format_info info ] |> List.filter_opt |> Node.div []
+            | Some start, _ :: { slice = { dt = burn; _ }; _ } :: _ ->
+              let alert =
                 Node.div
                   Attr.[ classes [ "alert"; "alert-warning" ]; style Css_gen.(max_width (`Px 650)) ]
                   [
                     Node.textf
-                      !"If you go outside at %{Weather.DT}, you will have a sunburn at around "
+                      !"If you go in the sun at %{Weather.DT}, you will have a sunburn at around "
                       start;
                     Node.span Attr.[ class_ "fw-bold" ] [ Node.textf !"%{Weather.DT}" burn ];
                   ]
-              | _ -> Node.none
-            in
-            let labels, data =
-              List.fold points ~init:([], []) ~f:(fun (labels, pct) computed ->
-                  Weather.DT.to_string computed.slice.dt :: labels, computed.total_at_start :: pct)
-            in
-            Node.div [] [ ttb; Chart.render ~labels ~data ~key:(sprintf !"%{sexp: data}" subform_data) ])
+              in
+              let info =
+                match subform_data.spf with
+                | Spf.Levels.SPF_0 -> [ "You should try again with sunscreen" ]
+                | Spf.Levels.SPF_100 -> [ "Limit your time in the sun today" ]
+                | _ -> [ "Try using a stronger sunscreen or limit your time in the sun today" ]
+              in
+              [ Some alert; format_info info ] |> List.filter_opt |> Node.div []
+            | _ -> Node.none
+          in
+          let labels, data =
+            List.fold points ~init:([], []) ~f:(fun (labels, pct) computed ->
+                Weather.DT.to_string computed.slice.dt :: labels, computed.total_at_start :: pct)
+          in
+          Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
+              let%lwt () = Js_of_ocaml_lwt.Lwt_js.sleep 0.1 in
+              let open Js_of_ocaml in
+              (Dom_html.getElementById_opt "results" |> function
+               | None -> print_endline "Error, could not find 'results'"
+               | Some el -> (Js.Unsafe.coerce el)##scrollIntoView);
+              Lwt.return_unit);
+          [ ttb; Chart.render ~labels ~data ~key:(sprintf !"%{sexp: data}" subform_data) ] |> Node.div [])
+
+    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; data } : Input.t) (_model : Model.t) =
+      let make_section ?id:id_ ~title ?subtitle nodes =
+        let attrs = Attr.[ class_ "pb-1" ] |> add_opt id_ ~f:Attr.id in
+        nodes
+        |> add_opt subtitle ~f:(fun s -> Node.h6 Attr.[ class_ "pb-1" ] [ Node.text s ])
+        |> List.cons @@ Node.h5 attrs [ Node.text title ]
+        |> Node.div Attr.[ classes [ "my-4" ] ]
       in
-      Node.div []
-        [
-          make_section "1. Your sensitivity to UV" [ skin_type_node ];
-          make_section "2. Sunscreen" [ spf_node ];
-          make_section "3. Location" [ geo_node ];
-          chart;
-        ]
+      []
+      |> add_opt (get_results data) ~f:(fun node -> make_section ~id:"results" ~title:"Result" [ node ])
+      |> List.cons
+         @@ make_section ~title:"3. Location" ~subtitle:"Used for cloud coverage and the angle of the sun"
+              [ geo_node ]
+      |> List.cons @@ make_section ~title:"2. Sunscreen" [ spf_node ]
+      |> List.cons
+         @@ make_section ~title:"1. Fitzpatrick skin scale"
+              ~subtitle:"Your skin's sensitivity to UV. Click on one." [ skin_type_node ]
+      |> Node.div []
 
     module Result = Node
   end in

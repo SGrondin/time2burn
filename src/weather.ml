@@ -76,7 +76,7 @@ let openweather_api_key = "7d892e70cd3986f7e4bd3f32c58dc8a6"
 let weather_uri = Uri.of_string "https://api.openweathermap.org/data/2.5/onecall"
 
 open Cohttp
-open Cohttp_lwt_xhr
+open Cohttp_lwt_jsoo
 module Body = Cohttp_lwt.Body
 
 let get_weather ~latitude ~longitude =

@@ -37,47 +37,61 @@ end
 
 let storage_key = "spf"
 
+let radios ~update state =
+  let handler _evt s =
+    let data = Sexp.of_string_conv_exn s [%of_sexp: Levels.t option] in
+    Local_storage.set_item ~key:storage_key ~data:s
+    |> Result.iter_error ~f:(fun err ->
+           print_endline
+             (sprintf "Could not store to local storage key '%s': '%s'. Error: '%s'" storage_key s err));
+    update data
+  in
+  let make spf =
+    let id_ = sprintf !"radio-%{Levels}" spf in
+    let data = Some spf in
+    let input_attrs =
+      let is_selected = [%equal: Levels.t option] state data in
+      Attr.
+        [
+          class_ "form-check-input";
+          type_ "radio";
+          name "spf-input";
+          id id_;
+          value (sprintf !"%{sexp: Levels.t option}" data);
+        ]
+      |> add_if is_selected Attr.checked
+    in
+    let label_attrs =
+      let extras =
+        match state, spf with
+        | None, Levels.SPF_0 -> Attr.[ class_ "text-primary" ]
+        | Some x, y when [%equal: Levels.t] x y -> Attr.[ class_ "fw-bold" ]
+        | _ -> []
+      in
+      merge_attrs [ Attr.[ classes [ "form-check-label"; "text-nowrap" ]; for_ id_ ]; extras ]
+    in
+    Node.div
+      Attr.[ classes [ "form-check" ] ]
+      [ Node.input input_attrs []; Node.label label_attrs [ Node.textf !"%{Levels}" spf ] ]
+  in
+  Node.div
+    Attr.[ classes [ "row"; "row-cols-3"; "g-1" ]; style Css_gen.(max_width (`Em 36)); on_change handler ]
+    (List.map Levels.all ~f:make)
+
 let component =
   let default_model = Local_storage.parse_item storage_key [%of_sexp: Levels.t option] |> Option.join in
   let%sub component = Bonsai.state_opt [%here] ?default_model (module Levels) in
   return
   @@ let%map state, update = component in
      let node =
-       let options =
-         let make x =
-           let attrs =
-             Attr.[ value (sprintf !"%{sexp: Levels.t option}" x) ]
-             |> add_if ([%equal: Levels.t option] x state) Attr.selected
-             |> add_if (Option.is_none x) Attr.disabled
-           in
-           let text = Option.value_map x ~default:"Select one" ~f:(sprintf !"%{Levels}") in
-           Node.option attrs [ Node.text text ]
-         in
-         make None :: List.map Levels.all ~f:(fun x -> make (Some x))
-       in
-       let handler _evt s =
-         Local_storage.set_item ~key:storage_key ~data:s
-         |> Result.iter_error ~f:(fun err ->
-                print_endline (sprintf "Could not store to local storage '%s'. Error: '%s'" s err));
-         Sexp.of_string_conv_exn s [%of_sexp: Levels.t option] |> update
-       in
-       let icon =
-         if Option.is_some state
-         then Icon.svg Check_lg ~container:Span Attr.[ class_ "text-success" ]
-         else Icon.svg X ~container:Span Attr.[ class_ "text-danger" ]
-       in
-       Node.div []
-         [
-           Node.select
-             Attr.
+       []
+       |> add_if (Option.is_none state)
+            (Node.span []
                [
-                 classes [ "form-select"; "d-inline"; "me-2" ];
-                 style Css_gen.(max_width (`Em 20));
-                 create "aria-label" "Levels skin scale";
-                 on_change handler;
-               ]
-             options;
-           icon;
-         ]
+                 Icon.svg X ~width:2.0 ~height:2.0 ~container:Span Attr.[ class_ "text-danger" ];
+                 Node.text "Pick one option";
+               ])
+       |> List.cons @@ radios ~update state
+       |> Node.div []
      in
      state, node

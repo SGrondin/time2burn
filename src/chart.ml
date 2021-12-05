@@ -40,7 +40,13 @@ module Options = struct
   }
   [@@deriving to_yojson]
 
-  type scale = { max: int } [@@deriving to_yojson] [@@unboxed]
+  type jss = Js_of_ocaml.Js.js_string Js_of_ocaml.Js.t
+
+  type scale = {
+    max: int;
+    title: title;
+  }
+  [@@deriving to_yojson]
 
   type scales = { y: scale } [@@deriving to_yojson] [@@unboxed]
 
@@ -99,7 +105,7 @@ let load ~labels ~data ~width:_ ~height canvas =
           responsive = false;
           plugins = { legend = { display = false; text = None } };
           interaction = { intersect = false; mode = "index" };
-          scales = { y = { max = 100 } };
+          scales = { y = { max = 100; title = { display = true; text = Some "skin damage" } } };
         };
     }
     |> [%to_yojson: config]
@@ -108,6 +114,18 @@ let load ~labels ~data ~width:_ ~height canvas =
   in
   let parsed = Js._JSON##parse options in
   parsed##.data##.datasets##._0##.backgroundColor := backgroud_gradient;
+  let ticks =
+    object%js
+      val callback =
+        fun v _i _vs ->
+          (match v with
+          | v when Float.(v >= 95.0) -> "SUNBURN"
+          | v when Float.(v >= 85.0) -> "Danger"
+          | v -> sprintf "%d%%" (Float.to_int v))
+          |> Js.string
+    end
+  in
+  parsed##.options##.scales##.y##.ticks := ticks;
   let _chart = new%js constructor ctx parsed in
   ()
 
