@@ -15,7 +15,7 @@ module Fitzpatrick = struct
     | VI
   [@@deriving sexp, equal, enumerate, variants]
 
-  let to_string = Variants.to_name
+  let to_string = sprintf !"Type %{Variants.to_name}"
 
   let tone = function
   | I -> "#F5D0B3"
@@ -97,7 +97,7 @@ let render_card ~update state fitz =
           Attr.
             [
               classes [ "d-inline-flex"; "justify-content-center" ];
-              style Css_gen.(width (`Em (if is_selected then 2 else 1)));
+              style Css_gen.(width (`Em_float (if is_selected then 4.8 else 3.4)));
             ]
           nodes;
       ]
