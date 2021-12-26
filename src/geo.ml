@@ -129,6 +129,7 @@ let component =
 
       type t = {
         weather: Weather.t option Or_error.t;
+        place_name: string option;
         status: status;
       }
       [@@deriving sexp, equal]
@@ -157,19 +158,19 @@ let component =
 
     let apply_action ~inject ~schedule_event (() : Input.t) (_prev : Model.t) : Action.t -> Model.t =
       function
-    | Blank_geo -> { weather = Ok None; status = Blank_geo }
-    | Blank_search text -> { weather = Ok None; status = Blank_search text }
+    | Blank_geo -> { weather = Ok None; place_name = None; status = Blank_geo }
+    | Blank_search text -> { weather = Ok None; place_name = None; status = Blank_search text }
     | Fetching_geo ->
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
           let+ result = get_location () in
           (match result with
           | Ok position ->
-            Action.Fetching_weather
-              { position; place_name = sprintf "%.3f,%.3f" position.latitude position.longitude }
+            let place_name = sprintf "Coordinates %.3f,%.3f" position.latitude position.longitude in
+            Action.Fetching_weather { position; place_name }
           | Error err -> Action.Errored err)
           |> inject
           |> schedule_event);
-      { weather = Ok None; status = Fetching_geo }
+      { weather = Ok None; place_name = None; status = Fetching_geo }
     | Fetching_search query ->
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
           let+ result = geocoding query in
@@ -178,8 +179,8 @@ let component =
           | Error err -> Action.Errored err)
           |> inject
           |> schedule_event);
-      { weather = Ok None; status = Fetching_search }
-    | Confirming_search x -> { weather = Ok None; status = Confirming_search x }
+      { weather = Ok None; place_name = None; status = Fetching_search }
+    | Confirming_search x -> { weather = Ok None; place_name = None; status = Confirming_search x }
     | Fetching_weather { place_name; position = { longitude; latitude } } ->
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
           let+ result = Weather.get_weather ~longitude ~latitude in
@@ -188,10 +189,10 @@ let component =
           | Error err -> Action.Errored err)
           |> inject
           |> schedule_event);
-      { weather = Ok None; status = Fetching_weather }
+      { weather = Ok None; place_name = Some place_name; status = Fetching_weather }
     | Fetched_weather { place_name; weather } ->
-      { weather = Ok (Some weather); status = Completed place_name }
-    | Errored err -> { weather = Error err; status = Blank_geo }
+      { weather = Ok (Some weather); place_name = Some place_name; status = Completed place_name }
+    | Errored err -> { weather = Error err; place_name = None; status = Blank_geo }
 
     let compute ~inject (() : Input.t) (model : Model.t) =
       let status_node =
@@ -228,9 +229,9 @@ let component =
           Node.div []
             [
               Node.button
-                Attr.[ classes [ "btn"; "btn-primary" ]; on_click handler_geo ]
+                Attr.[ classes [ "btn"; "btn-primary"; "d-block" ]; on_click handler_geo ]
                 [ Node.text "Use my location" ];
-              Node.div
+              Node.span
                 Attr.[ classes [ "link-info"; "mt-1" ]; on_click handler_toggle; style pointer ]
                 [ Node.text "Enter address manually" ];
             ]
@@ -332,17 +333,19 @@ let component =
             ]
         | Ok _ -> Node.div [] [ Node.div [] []; status_node ]
       in
-      let data =
+      let data_weather =
         match model.weather with
         | Error _
          |Ok None ->
           None
         | Ok (Some x) -> Some x
       in
-      data, node
+      (data_weather, model.place_name, Time.now ()), node
 
     module Result = struct
-      type t = Weather.t option * Node.t
+      type t = (Weather.t option * string option * Time.t) * Node.t
     end
   end in
-  Bonsai.of_module0 (module Component) ~default_model:{ weather = Ok None; status = Blank_geo }
+  Bonsai.of_module0
+    (module Component)
+    ~default_model:{ weather = Ok None; place_name = None; status = Blank_geo }

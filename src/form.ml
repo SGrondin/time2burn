@@ -5,8 +5,16 @@ open! Vdom
 open! Bootstrap
 open! Bootstrap.Basic
 
+type time_t = Time.t
+
+let sexp_of_time_t x = Sexp.Atom (Time.to_string x)
+
+let time_t_of_sexp x = [%of_sexp: string] x |> Time.of_string
+
 type data = {
   weather: Weather.t;
+  place_name: string;
+  now: time_t;
   skin_type: Skin_type.Fitzpatrick.t;
   spf: Spf.Levels.t;
 }
@@ -29,7 +37,8 @@ let subforms =
      and spf_data, spf_node = spf in
      let data =
        match geo_data, skin_type_data, spf_data with
-       | Some weather, Some skin_type, Some spf -> Some { weather; skin_type; spf }
+       | (Some weather, Some place_name, now), Some skin_type, Some spf ->
+         Some { weather; place_name; now; skin_type; spf }
        | _ -> None
      in
      { geo_node; skin_type_node; spf_node; data }
@@ -47,7 +56,7 @@ type computed = {
 }
 [@@deriving sexp, equal]
 
-let how_long_rev ~num_slices { weather; skin_type; spf } =
+let how_long_rev ~num_slices { weather; place_name = _; now = _; skin_type; spf } =
   let slice_minutes = 60 // num_slices in
   let ( +* ) time = function
     | 0 -> time
@@ -81,21 +90,141 @@ let how_long_rev ~num_slices { weather; skin_type; spf } =
         let would_be_100 = skin_type * 8.0 / max 1.0 slice.uvi * spf in
         let cost = slice_minutes * 100.0 / would_be_100 in
         let next = { slice; cost; total_at_start = total } in
-        if total >= 100.0 then Stop (succ n, next :: ll) else Continue (total + cost, succ n, next :: ll))
+        match slice with
+        | _ when total >= 100.0 -> Stop (succ n, next :: ll)
+        | { dt; _ } when Int.(n > 11 && Weather.DT.to_hour_of_day dt >= 22) -> Stop (succ n, next :: ll)
+        | _ -> Continue (total + cost, succ n, next :: ll))
   in
   going_outside, num_points, points
 
-let best_fit_how_long_rev data =
+let best_fit_how_long_rev ?(slices = [ 30; 12; 6; 4 ]) data =
   let rec loop = function
     | [ num_slices ] ->
       let going_outside, _, points = how_long_rev ~num_slices data in
-      going_outside, points
+      going_outside, points, num_slices
     | num_slices :: rest ->
       let going_outside, num_points, points = how_long_rev ~num_slices data in
-      if num_points <= 26 then going_outside, points else loop rest
+      if num_points <= 26 then going_outside, points, num_slices else loop rest
     | [] -> failwith "Impossible case, there should always be hourly values"
   in
-  loop [ 30; 12; 6; 4 ]
+  loop slices
+
+type color =
+  | Info
+  | Warning
+  | Danger
+
+let color_to_class = function
+| Info -> "text-info"
+| Warning -> "text-warning"
+| Danger -> "text-danger"
+
+let get_results data =
+  let render_advice = function
+    | [] -> None
+    | ll -> List.map ll ~f:(fun s -> Node.li [] [ Node.text s ]) |> Node.ul [] |> Option.return
+  in
+  let render_ttb ~color limit text =
+    Node.div []
+      [
+        Node.h5
+          Attr.[ classes [ "fw-bold"; "d-inline"; "me-1"; color_to_class color ] ]
+          [ Node.text limit ];
+        Node.span [] [ Node.text text ];
+      ]
+  in
+  let get_ttb ~color spf now = function
+    | { total_at_start; _ } :: _ when Float.( < ) total_at_start 95.0 -> None
+    | _ :: { slice = { dt; _ }; _ } :: _ ->
+      let sunscreen =
+        if Spf.Levels.is_zero spf then "without sunscreen" else sprintf !"with %{Spf.Levels}" spf
+      in
+      let burn = Time.diff dt now |> Weather.DT.span_to_string in
+      Some (render_ttb ~color burn sunscreen)
+    | _ -> None
+  in
+  let render subform_data =
+    let going_outside, points, num_slices = best_fit_how_long_rev subform_data in
+    let sub_offset =
+      match going_outside with
+      | None -> Fn.id
+      | Some start when Time.(subform_data.now >= start) -> Fn.id
+      | Some start ->
+        let offset = Time.diff start subform_data.now in
+        (fun x -> Time.sub x offset)
+    in
+
+    let labels, data =
+      List.fold points ~init:([], []) ~f:(fun (labels, pct) computed ->
+          Weather.DT.to_string (sub_offset computed.slice.dt) :: labels, computed.total_at_start :: pct)
+    in
+
+    let data_spf_0, ttb_spf_0, data_spf_x, ttb_spf_x =
+      match subform_data.spf with
+      | SPF_0 as spf -> data, get_ttb ~color:Warning spf subform_data.now points, None, None
+      | spf ->
+        let points_spf_0 = best_fit_how_long_rev { subform_data with spf = SPF_0 } |> snd3 in
+        let data_spf_0 =
+          best_fit_how_long_rev ~slices:[ num_slices ] { subform_data with spf = SPF_0 }
+          |> snd3
+          |> List.fold ~init:[] ~f:(fun pct computed -> computed.total_at_start :: pct)
+        in
+        ( data_spf_0,
+          get_ttb ~color:Danger SPF_0 subform_data.now points_spf_0,
+          Some data,
+          get_ttb ~color:Warning spf subform_data.now points )
+    in
+
+    Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
+        let%lwt () = Js_of_ocaml_lwt.Lwt_js.sleep 0.1 in
+        let open Js_of_ocaml in
+        (Dom_html.getElementById_opt "results" |> function
+         | None -> print_endline "Error, could not find 'results'"
+         | Some el -> (Js.Unsafe.coerce el)##scrollIntoView);
+        Lwt.return_unit);
+
+    let advice =
+      let is_zero, advice =
+        match Spf.Levels.is_zero subform_data.spf with
+        | true as x -> x, []
+        | false as x ->
+          ( x,
+            [
+              "Make sure to reapply sunscreen every 2 hours";
+              "Reapply sunscreen after swimming or excessive sweating";
+            ] )
+      in
+      match points with
+      | { total_at_start; _ } :: _ when Float.( < ) total_at_start 95.0 ->
+        if is_zero
+        then advice
+        else
+          advice
+          @ [ "With these precautions you can spend the rest of the day out in the sun, enjoy! ☀️" ]
+      | _ :: { slice = { dt = _burn; _ }; _ } :: _ -> (
+        match subform_data.spf with
+        | Spf.Levels.SPF_0 -> "You should try again with sunscreen" :: advice
+        | Spf.Levels.SPF_100 -> "Limit your time in the sun today" :: advice
+        | _ -> "Try using a stronger sunscreen or limit your time in the sun today" :: advice
+      )
+      | _ -> advice
+    in
+
+    let node =
+      []
+      |> add_opt_id (render_advice advice)
+      |> add_opt_id ttb_spf_0
+      |> add_opt_id
+           (Option.first_some ttb_spf_x
+              (Option.some_if
+                 (not (Spf.Levels.is_zero subform_data.spf))
+                 (render_ttb ~color:Info "No limit" "with sunscreen")))
+      |> Node.div []
+    in
+    [ node; Chart.render ~labels ~data_spf_x ~data_spf_0 ~key:(sprintf !"%{sexp: data}" subform_data) ]
+    |> Node.div []
+  in
+  Option.map data ~f:render
 
 let component =
   let%sub subforms = subforms in
@@ -114,79 +243,23 @@ let component =
 
     let apply_action ~inject:_ ~schedule_event:_ (_subforms : Input.t) (prev : Model.t) _action = prev
 
-    let get_results data =
-      let format_info = function
-        | [] -> None
-        | ll -> List.map ll ~f:(fun s -> Node.li [] [ Node.text s ]) |> Node.ul [] |> Option.return
-      in
-      Option.map data ~f:(fun subform_data ->
-          let going_outside, points = best_fit_how_long_rev subform_data in
-          let ttb =
-            match going_outside, points with
-            | Some _, { total_at_start; _ } :: _ when Float.( < ) total_at_start 95.0 ->
-              let alert =
-                Node.div
-                  Attr.[ classes [ "alert"; "alert-success" ]; style Css_gen.(max_width (`Px 650)) ]
-                  [ Node.text "You should be fine!" ]
-              in
-              let info =
-                match subform_data.spf with
-                | Spf.Levels.SPF_0 -> []
-                | _ ->
-                  [
-                    "Make sure to reapply sunscreen every 2 hours";
-                    "Reapply sunscreen after swimming or excessive sweating";
-                    "With these precautions you can spend the rest of the day out in the sun, enjoy! \
-                     ☀️";
-                  ]
-              in
-              [ Some alert; format_info info ] |> List.filter_opt |> Node.div []
-            | Some start, _ :: { slice = { dt = burn; _ }; _ } :: _ ->
-              let alert =
-                Node.div
-                  Attr.[ classes [ "alert"; "alert-warning" ]; style Css_gen.(max_width (`Px 650)) ]
-                  [
-                    Node.textf
-                      !"If you go in the sun at %{Weather.DT}, you will have a sunburn at around "
-                      start;
-                    Node.span Attr.[ class_ "fw-bold" ] [ Node.textf !"%{Weather.DT}" burn ];
-                  ]
-              in
-              let info =
-                match subform_data.spf with
-                | Spf.Levels.SPF_0 -> [ "You should try again with sunscreen" ]
-                | Spf.Levels.SPF_100 -> [ "Limit your time in the sun today" ]
-                | _ -> [ "Try using a stronger sunscreen or limit your time in the sun today" ]
-              in
-              [ Some alert; format_info info ] |> List.filter_opt |> Node.div []
-            | _ -> Node.none
-          in
-          let labels, data =
-            List.fold points ~init:([], []) ~f:(fun (labels, pct) computed ->
-                Weather.DT.to_string computed.slice.dt :: labels, computed.total_at_start :: pct)
-          in
-          Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
-              let%lwt () = Js_of_ocaml_lwt.Lwt_js.sleep 0.1 in
-              let open Js_of_ocaml in
-              (Dom_html.getElementById_opt "results" |> function
-               | None -> print_endline "Error, could not find 'results'"
-               | Some el -> (Js.Unsafe.coerce el)##scrollIntoView);
-              Lwt.return_unit);
-          [ ttb; Chart.render ~labels ~data ~key:(sprintf !"%{sexp: data}" subform_data) ] |> Node.div [])
-
     let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; data } : Input.t) (_model : Model.t) =
       let make_section ?id:id_ ~title ?subtitle nodes =
         let attrs = Attr.[ class_ "pb-1" ] |> add_opt id_ ~f:Attr.id in
         nodes
         |> add_opt subtitle ~f:(fun s -> Node.h6 Attr.[ class_ "pb-1" ] [ Node.text s ])
         |> List.cons @@ Node.h5 attrs [ Node.text title ]
-        |> Node.div Attr.[ classes [ "my-4" ] ]
+        |> Node.div Attr.[ class_ "my-4" ]
       in
       []
-      |> add_opt (get_results data) ~f:(fun node -> make_section ~id:"results" ~title:"Result" [ node ])
+      |> add_opt (get_results data) ~f:(fun node ->
+             [ node ]
+             |> List.cons
+                @@ Node.h4 Attr.[ classes [ "pb-1"; "fw-bold" ]; id "results" ] [ Node.text "Results" ]
+             |> Node.div Attr.[ class_ "my-4" ])
       |> List.cons
-         @@ make_section ~title:"3. Location" ~subtitle:"Used for cloud coverage and the angle of the sun"
-              [ geo_node ]
+         @@ make_section ~title:"3. Time & Place"
+              ~subtitle:"Used for cloud coverage and the angle of the sun." [ geo_node ]
       |> List.cons @@ make_section ~title:"2. Sunscreen" [ spf_node ]
       |> List.cons
          @@ make_section ~title:"1. Fitzpatrick skin scale"

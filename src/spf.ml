@@ -16,6 +16,10 @@ module Levels = struct
     | SPF_100
   [@@deriving sexp, equal, enumerate]
 
+  let is_zero = function
+  | SPF_0 -> true
+  | _ -> false
+
   let to_string = function
   | SPF_0 -> "None"
   | SPF_15 -> "SPF 15"
@@ -63,9 +67,9 @@ let radios ~update state =
     in
     let label_attrs =
       let extras =
-        match state, spf with
-        | None, Levels.SPF_0 -> Attr.[ class_ "text-primary" ]
-        | Some x, y when [%equal: Levels.t] x y -> Attr.[ class_ "fw-bold" ]
+        match state with
+        | None when Levels.is_zero spf -> Attr.[ class_ "text-primary" ]
+        | Some x when [%equal: Levels.t] x spf -> Attr.[ class_ "fw-bold" ]
         | _ -> []
       in
       merge_attrs [ Attr.[ classes [ "form-check-label"; "text-nowrap" ]; for_ id_ ]; extras ]

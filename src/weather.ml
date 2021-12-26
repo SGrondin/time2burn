@@ -26,6 +26,17 @@ module DT = struct
       | h -> h - 12, "pm"
     in
     sprintf "%d:%02d%s" hour parts.min ampm
+
+  let to_hour_of_day dt =
+    let parts = Time.to_ofday ~zone:browser_timezone dt |> Time.Ofday.to_parts in
+    parts.hr
+
+  let span_to_string (x : Time.Span.t) =
+    let parts = Time.Span.to_parts x in
+    match parts.hr, parts.min with
+    | 0, m -> sprintf "%d minutes" m
+    | 1, m -> sprintf "1 hour and %d minutes" m
+    | h, m -> sprintf "%d hours and %d minutes" h m
 end
 
 type overview = {
