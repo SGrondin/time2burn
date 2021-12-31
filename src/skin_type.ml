@@ -41,13 +41,13 @@ module Fitzpatrick = struct
   | V -> "Very rarely burns, tans very easily"
   | VI -> "Never burns, tans very easily, deeply pigmented"
 
-  let coeff = function
-  | I -> 5.0
-  | II -> 10.0
-  | III -> 15.0
-  | IV -> 25.0
-  | V -> 45.0
-  | VI -> 90.0
+  let to_coeff = function
+  | I -> 2.5
+  | II -> 3.0
+  | III -> 4.0
+  | IV -> 5.0
+  | V -> 8.0
+  | VI -> 15.0
 end
 
 let storage_key = "skin-type"

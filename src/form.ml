@@ -17,6 +17,7 @@ type data = {
   now: time_t;
   skin_type: Skin_type.Fitzpatrick.t;
   spf: Spf.Levels.t;
+  sweating: Sweating.Levels.t;
 }
 [@@deriving sexp]
 
@@ -24,6 +25,7 @@ type subforms = {
   geo_node: Node.t;
   skin_type_node: Node.t;
   spf_node: Node.t;
+  sweating_node: Node.t;
   data: data option;
 }
 
@@ -31,17 +33,19 @@ let subforms =
   let%sub geo = Geo.component in
   let%sub skin_type = Skin_type.component in
   let%sub spf = Spf.component in
+  let%sub sweating = Sweating.component in
   return
   @@ let%map geo_data, geo_node = geo
      and skin_type_data, skin_type_node = skin_type
-     and spf_data, spf_node = spf in
+     and spf_data, spf_node = spf
+     and sweating_data, sweating_node = sweating in
      let data =
-       match geo_data, skin_type_data, spf_data with
-       | (Some weather, Some place_name, now), Some skin_type, Some spf ->
-         Some { weather; place_name; now; skin_type; spf }
+       match geo_data, skin_type_data, spf_data, sweating_data with
+       | (Some weather, Some place_name), Some skin_type, Some spf, Some sweating ->
+         Some { weather; place_name; now = weather.current.dt; skin_type; spf; sweating }
        | _ -> None
      in
-     { geo_node; skin_type_node; spf_node; data }
+     { geo_node; skin_type_node; spf_node; sweating_node; data }
 
 type slice = {
   dt: Weather.DT.t;
@@ -56,14 +60,12 @@ type computed = {
 }
 [@@deriving sexp, equal]
 
-let how_long_rev ~num_slices { weather; place_name = _; now = _; skin_type; spf } =
+let how_long_rev ~num_slices { weather; place_name = _; now; skin_type; spf; sweating } =
   let slice_minutes = 60 // num_slices in
   let ( +* ) time = function
     | 0 -> time
     | n -> Time.add time (Time.Span.of_min Float.(of_int n * slice_minutes))
   in
-  let skin_type = Skin_type.Fitzpatrick.coeff skin_type in
-  let spf = Spf.Levels.to_coeff spf in
   let slices =
     let rec loop acc : Weather.hourly list -> slice list = function
       | []
@@ -73,21 +75,43 @@ let how_long_rev ~num_slices { weather; place_name = _; now = _; skin_type; spf 
         let open Float in
         let ll =
           List.init num_slices ~f:(fun i ->
-              let gradient = of_int i * (1 // 12) in
+              let gradient = of_int i * (1 // num_slices) in
               { dt = x.dt +* i; uvi = (x.uvi * (1.0 - gradient)) + (y.uvi * gradient) })
-          |> List.rev_filter ~f:(fun { dt; _ } -> Time.(dt >= weather.current.dt))
+          |> List.rev_filter ~f:(fun { dt; _ } -> Time.( >= ) dt now)
         in
         loop (ll @ acc) rest
     in
     loop [] (List.take weather.hourly 13) |> List.rev
   in
-  let going_outside = List.hd slices |> Option.map ~f:(fun { dt; _ } -> dt) in
+  let skin_type = Skin_type.Fitzpatrick.to_coeff skin_type in
+  let get_spf =
+    let open Float in
+    let base = Spf.Levels.to_coeff spf in
+    let convert ~start ~over =
+      let over = Time.Span.of_hr over in
+      let over_minutes = Time.Span.to_min over in
+      let cutoff_start = Time.add now (Time.Span.of_hr start) in
+      let cutoff_finish = Time.add cutoff_start over in
+      function
+      | dt when Time.(dt <= cutoff_start) -> base
+      | dt when Time.(dt >= cutoff_finish) -> Spf.Levels.to_coeff SPF_0
+      | dt ->
+        let passed = Time.diff dt cutoff_start |> Time.Span.to_min in
+        base - (passed * base / over_minutes)
+    in
+    match sweating, spf with
+    | Low, _
+     |_, SPF_0 ->
+      const base
+    | Medium, _ -> convert ~start:1.0 ~over:6.0
+    | High, _ -> convert ~start:2.0 ~over:12.0
+  in
   let num_points, points =
     List.fold_until slices ~init:(0.0, 0, [])
       ~finish:(fun (_, n, ll) -> n, ll)
       ~f:(fun (total, n, ll) slice ->
         let open Float in
-        let would_be_100 = skin_type * 8.0 / max 1.0 slice.uvi * spf in
+        let would_be_100 = 200.0 * skin_type / max 0.001 (slice.uvi * 3.0) * get_spf slice.dt in
         let cost = slice_minutes * 100.0 / would_be_100 in
         let next = { slice; cost; total_at_start = total } in
         match slice with
@@ -95,6 +119,7 @@ let how_long_rev ~num_slices { weather; place_name = _; now = _; skin_type; spf 
         | { dt; _ } when Int.(n > 11 && Weather.DT.to_hour_of_day dt >= 22) -> Stop (succ n, next :: ll)
         | _ -> Continue (total + cost, succ n, next :: ll))
   in
+  let going_outside = List.hd slices |> Option.map ~f:(fun { dt; _ } -> dt) in
   going_outside, num_points, points
 
 let best_fit_how_long_rev ?(slices = [ 30; 12; 6; 4 ]) data =
@@ -187,12 +212,7 @@ let get_results data =
       let is_zero, advice =
         match Spf.Levels.is_zero subform_data.spf with
         | true as x -> x, []
-        | false as x ->
-          ( x,
-            [
-              "Make sure to reapply sunscreen every 2 hours";
-              "Reapply sunscreen after swimming or excessive sweating";
-            ] )
+        | false as x -> x, [ "Reapply sunscreen after swimming or excessive sweating" ]
       in
       match points with
       | { total_at_start; _ } :: _ when Float.( < ) total_at_start 95.0 ->
@@ -243,12 +263,13 @@ let component =
 
     let apply_action ~inject:_ ~schedule_event:_ (_subforms : Input.t) (prev : Model.t) _action = prev
 
-    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; data } : Input.t) (_model : Model.t) =
-      let make_section ?id:id_ ~title ?subtitle nodes =
+    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; sweating_node; data } : Input.t)
+       (_model : Model.t) =
+      let make_section ?id:id_ ?title ?subtitle nodes =
         let attrs = Attr.[ class_ "pb-1" ] |> add_opt id_ ~f:Attr.id in
         nodes
         |> add_opt subtitle ~f:(fun s -> Node.h6 Attr.[ class_ "pb-1" ] [ Node.text s ])
-        |> List.cons @@ Node.h5 attrs [ Node.text title ]
+        |> add_opt title ~f:(fun s -> Node.h5 attrs [ Node.text s ])
         |> Node.div Attr.[ class_ "my-4" ]
       in
       []
@@ -260,6 +281,7 @@ let component =
       |> List.cons
          @@ make_section ~title:"3. Time & Place"
               ~subtitle:"Used for cloud coverage and the angle of the sun." [ geo_node ]
+      |> List.cons @@ make_section ~subtitle:"Sweating" [ sweating_node ]
       |> List.cons @@ make_section ~title:"2. Sunscreen" [ spf_node ]
       |> List.cons
          @@ make_section ~title:"1. Fitzpatrick skin scale"

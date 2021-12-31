@@ -7,44 +7,23 @@ open! Bootstrap.Basic
 
 module Levels = struct
   type t =
-    | SPF_0
-    | SPF_15
-    | SPF_30
-    | SPF_50
-    | SPF_60
-    | SPF_80
-    | SPF_100
+    | Low
+    | Medium
+    | High
   [@@deriving sexp, equal, enumerate]
 
-  let is_zero = function
-  | SPF_0 -> true
-  | _ -> false
-
   let to_string = function
-  | SPF_0 -> "None"
-  | SPF_15 -> "SPF 15"
-  | SPF_30 -> "SPF 30"
-  | SPF_50 -> "SPF 50"
-  | SPF_60 -> "SPF 60"
-  | SPF_80 -> "SPF 80"
-  | SPF_100 -> "SPF 100"
-
-  let to_coeff = function
-  | SPF_0 -> 1.0
-  | SPF_15 -> 15.0
-  | SPF_30 -> 30.0
-  | SPF_50 -> 50.0
-  | SPF_60 -> 60.0
-  | SPF_80 -> 80.0
-  | SPF_100 -> 100.0
+  | Low -> "None"
+  | Medium -> "Some"
+  | High -> "Profuse"
 end
 
-let storage_key = "spf"
+let storage_key = "sweating"
 
 module Radios = Radios.Make (struct
   include Levels
 
-  let is_bold = is_zero
+  let is_bold _ = false
 end)
 
 let component =

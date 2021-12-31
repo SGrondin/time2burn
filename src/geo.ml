@@ -340,10 +340,10 @@ let component =
           None
         | Ok (Some x) -> Some x
       in
-      (data_weather, model.place_name, Time.now ()), node
+      (data_weather, model.place_name), node
 
     module Result = struct
-      type t = (Weather.t option * string option * Time.t) * Node.t
+      type t = (Weather.t option * string option) * Node.t
     end
   end in
   Bonsai.of_module0
