@@ -100,8 +100,8 @@ let how_long_rev ~num_slices { weather; place_name = _; now; skin_type; spf; swe
     | Low, _
      |_, SPF_0 ->
       const base
-    | Medium, _ -> convert ~start:1.0 ~over:6.0
-    | High, _ -> convert ~start:2.0 ~over:12.0
+    | Medium, _ -> convert ~start:2.0 ~over:12.0
+    | High, _ -> convert ~start:1.0 ~over:6.0
   in
   let num_points, points =
     List.fold_until slices ~init:(0.0, 0, [])
