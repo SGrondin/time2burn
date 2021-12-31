@@ -10,5 +10,6 @@ COPY files/style.css .
 COPY _build/default/src/app.bc.js app.js
 COPY files/fitzpatrick.png .
 COPY files/favicon.png .
+COPY files/mapbox.svg .
 
 ENTRYPOINT [ "python3", "-m", "http.server", "8081" ]
