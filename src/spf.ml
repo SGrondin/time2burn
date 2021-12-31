@@ -50,10 +50,16 @@ end)
 let component =
   let default_model = Local_storage.parse_item storage_key [%of_sexp: Levels.t option] |> Option.join in
   let%sub component = Bonsai.state_opt [%here] ?default_model (module Levels) in
+  let%sub sweating = Sweating.component in
   return
-  @@ let%map state, update = component in
+  @@ let%map state, update = component
+     and sweating_data, sweating_node = sweating in
      let node =
        []
+       |> add_if
+            (Option.value_map state ~default:false ~f:(fun x -> not (Levels.is_zero x)))
+            (Node.div []
+               [ Node.h5 Attr.[ classes [ "mt-3"; "ms-2" ] ] [ Node.text "Sweating" ]; sweating_node ])
        |> add_if (Option.is_none state)
             (Node.span []
                [
@@ -63,4 +69,4 @@ let component =
        |> List.cons @@ Radios.create ~storage_key ~update state ~columns:3
        |> Node.div []
      in
-     state, node
+     state, sweating_data, node

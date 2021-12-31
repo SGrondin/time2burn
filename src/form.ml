@@ -25,7 +25,6 @@ type subforms = {
   geo_node: Node.t;
   skin_type_node: Node.t;
   spf_node: Node.t;
-  sweating_node: Node.t;
   data: data option;
 }
 
@@ -33,19 +32,17 @@ let subforms =
   let%sub geo = Geo.component in
   let%sub skin_type = Skin_type.component in
   let%sub spf = Spf.component in
-  let%sub sweating = Sweating.component in
   return
   @@ let%map geo_data, geo_node = geo
      and skin_type_data, skin_type_node = skin_type
-     and spf_data, spf_node = spf
-     and sweating_data, sweating_node = sweating in
+     and spf_data, sweating_data, spf_node = spf in
      let data =
        match geo_data, skin_type_data, spf_data, sweating_data with
        | (Some weather, Some place_name), Some skin_type, Some spf, Some sweating ->
          Some { weather; place_name; now = weather.current.dt; skin_type; spf; sweating }
        | _ -> None
      in
-     { geo_node; skin_type_node; spf_node; sweating_node; data }
+     { geo_node; skin_type_node; spf_node; data }
 
 type slice = {
   dt: Weather.DT.t;
@@ -263,8 +260,7 @@ let component =
 
     let apply_action ~inject:_ ~schedule_event:_ (_subforms : Input.t) (prev : Model.t) _action = prev
 
-    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; sweating_node; data } : Input.t)
-       (_model : Model.t) =
+    let compute ~inject:_ ({ geo_node; skin_type_node; spf_node; data } : Input.t) (_model : Model.t) =
       let make_section ?id:id_ ?title ?subtitle nodes =
         let attrs = Attr.[ class_ "pb-1" ] |> add_opt id_ ~f:Attr.id in
         nodes
@@ -281,7 +277,6 @@ let component =
       |> List.cons
          @@ make_section ~title:"3. Time & Place"
               ~subtitle:"Used for cloud coverage and the angle of the sun." [ geo_node ]
-      |> List.cons @@ make_section ~subtitle:"Sweating" [ sweating_node ]
       |> List.cons @@ make_section ~title:"2. Sunscreen" [ spf_node ]
       |> List.cons
          @@ make_section ~title:"1. Fitzpatrick skin scale"
