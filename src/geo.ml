@@ -29,12 +29,14 @@ let get_location () =
   in
   let on_error err =
     (match err##.code with
-    | 1 -> "Please enable Location Services on your device and try again."
+    | 1 ->
+      "Please enable Location Services on your device and try again. You can also enter an address \
+       manually."
     | 2 ->
       "Your device failed to discover your location. Please try again or manually enter your address."
     | 3 ->
-      "Your device could not determine your position in a reasonable time. Please try again or manually \
-       enter your address."
+      "Your device could not determine your position in a reasonable time. Please try again or enter \
+       your address manually."
     | _ ->
       "Your device failed to discover your location due to an unknown error. Please try again or \
        manually enter your address.")
