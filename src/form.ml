@@ -38,6 +38,8 @@ let subforms =
      and spf_data, sweating_data, spf_node = spf in
      let data =
        match geo_data, skin_type_data, spf_data, sweating_data with
+       | (Some weather, Some place_name), Some skin_type, Some (SPF_0 as spf), None ->
+         Some { weather; place_name; now = weather.current.dt; skin_type; spf; sweating = Low }
        | (Some weather, Some place_name), Some skin_type, Some spf, Some sweating ->
          Some { weather; place_name; now = weather.current.dt; skin_type; spf; sweating }
        | _ -> None
