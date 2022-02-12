@@ -17,30 +17,115 @@ module Position = struct
   [@@deriving sexp, equal]
 end
 
+module Errors = struct
+  type t =
+    [ `Disabled
+    | `Declined
+    | `Failed
+    | `Timeout
+    | `Unexpected
+    | `Safari
+    | `Text       of string
+    ]
+  [@@deriving sexp, equal]
+
+  let to_div = function
+  | `Disabled ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "Please enable Location Services on your device and try again." ];
+        Node.text "You can also enter an address manually.";
+      ]
+  | `Declined ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "This site is not allowed to use your location." ];
+        Node.text "You can enter an address manually.";
+      ]
+  | `Failed ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "Your device failed to discover your location." ];
+        Node.text "You can also enter an address manually.";
+      ]
+  | `Timeout ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "Your device could not determine your position in a reasonable time." ];
+        Node.text "Please try again or enter your address manually.";
+      ]
+  | `Unexpected ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "Your device failed to discover your location due to an unknown error." ];
+        Node.text "Please try again or enter your address manually.";
+      ]
+  | `Safari ->
+    Node.div []
+      [
+        Node.div [] [ Node.text "Please enable Location Services on your device and try again." ];
+        Node.p [] [ Node.text "Settings -> Privacy -> Location Services" ];
+        Node.text "You can also enter an address manually.";
+      ]
+  | `Text s ->
+    Node.div [] [ Node.div [] [ Node.text s ]; Node.text "You can also enter an address manually." ]
+end
+
+module Permissions = struct
+  type t =
+    | Unknown
+    | Granted
+    | Prompt
+    | Denied
+  [@@deriving sexp, equal]
+
+  let query kind =
+    let open Js_of_ocaml in
+    match window##.navigator##.permissions |> Js.Optdef.return |> Js.Optdef.to_option with
+    | None -> Lwt.return_ok Unknown
+    | Some permissions ->
+      let p, w = Lwt.task () in
+      let arg =
+        object%js
+          val name = Js.string kind
+        end
+      in
+      let jsp = permissions##query arg in
+      let _then =
+        jsp##_then (fun obj ->
+            Lwt.wakeup_later w
+              (match obj##.state |> Js.to_string with
+              | "granted" -> Ok Granted
+              | "prompt" -> Ok Prompt
+              | "denied" -> Ok Denied
+              | s -> Error (`Text (sprintf "Invalid geolocation permission '%s'" s))))
+      in
+      let _catch =
+        jsp##_catch (fun err -> Lwt.wakeup_later w (Error (`Text (err##toString |> Js.to_string))))
+      in
+      p
+end
+
 let get_location () =
   let p, w = Lwt.task () in
   let on_success position =
-    Or_error.try_with ~backtrace:true (fun () ->
-        let () = window##.console##log position in
-        let latitude = position##.coords##.latitude in
-        let longitude = position##.coords##.longitude in
-        Position.{ latitude; longitude })
+    (try
+       let () = window##.console##log position in
+       let latitude = position##.coords##.latitude in
+       let longitude = position##.coords##.longitude in
+       Ok Position.{ latitude; longitude }
+     with
+    | Failure msg -> Error (`Text msg)
+    | exn -> Error (`Text (Exn.to_string exn)))
     |> Lwt.wakeup_later w
   in
   let on_error err =
     (match err##.code with
-    | 1 ->
-      "Please enable Location Services on your device and try again. You can also enter an address \
-       manually."
-    | 2 ->
-      "Your device failed to discover your location. Please try again or manually enter your address."
-    | 3 ->
-      "Your device could not determine your position in a reasonable time. Please try again or enter \
-       your address manually."
-    | _ ->
-      "Your device failed to discover your location due to an unknown error. Please try again or \
-       manually enter your address.")
-    |> Or_error.error_string
+    | 1 -> `Disabled
+    | 2 -> `Failed
+    | 3 -> `Timeout
+    | _ -> `Unexpected)
+    |> Result.fail
     |> Lwt.wakeup_later w
   in
   let options =
@@ -76,7 +161,7 @@ module Mapbox = struct
     [%of_yojson: feature_collection] json
     >>= (fun { features; attribution } ->
           List.hd features |> Result.of_option ~error:"No results found" >>| fun x -> x, attribution)
-    |> Result.map_error ~f:Error.of_string
+    |> Result.map_error ~f:(fun s -> `Text s)
 end
 
 let geocoding query =
@@ -105,7 +190,9 @@ let geocoding query =
       | code ->
         print_endline raw;
         failwithf "Could not get address data. Error %d" code ())
-    (fun exn -> Or_error.of_exn exn |> Lwt.return)
+    (function
+      | Failure msg -> Lwt.return_error (`Text msg)
+      | exn -> Lwt.return_error (`Text (Exn.to_string exn)))
 
 let component =
   let module Component = struct
@@ -130,7 +217,7 @@ let component =
       [@@deriving sexp, equal]
 
       type t = {
-        weather: Weather.t option Or_error.t;
+        weather: (Weather.t option, Errors.t) Result.t;
         place_name: string option;
         status: status;
       }
@@ -152,7 +239,7 @@ let component =
             place_name: string;
             weather: Weather.t;
           }
-        | Errored           of Error.t
+        | Errored           of Errors.t
       [@@deriving sexp_of]
     end
 
@@ -163,34 +250,48 @@ let component =
     | Blank_geo -> { weather = Ok None; place_name = None; status = Blank_geo }
     | Blank_search text -> { weather = Ok None; place_name = None; status = Blank_search text }
     | Fetching_geo ->
+      let open Lwt.Infix in
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
-          let+ result = get_location () in
-          (match result with
-          | Ok position ->
-            let place_name = sprintf "Coordinates %.3f,%.3f" position.latitude position.longitude in
-            Action.Fetching_weather { position; place_name }
-          | Error err -> Action.Errored err)
-          |> inject
-          |> schedule_event);
+          Permissions.query "geolocation" >>= function
+          | Error (`Text _ as err) ->
+            Action.Errored err |> inject |> schedule_event;
+            Lwt.return_unit
+          | Ok permissions ->
+            let+ location = get_location () in
+            (match permissions, location with
+            | Denied, Error x -> Action.Errored x
+            | _, Ok position ->
+              Action.Fetching_weather
+                {
+                  position;
+                  place_name = sprintf "Coordinates %.3f,%.3f" position.latitude position.longitude;
+                }
+            | Unknown, Error `Failed -> Action.Errored `Safari
+            | Unknown, Error `Disabled
+             |Prompt, Error `Disabled ->
+              Action.Errored `Declined
+            | _, Error x -> Action.Errored x)
+            |> inject
+            |> schedule_event);
       { weather = Ok None; place_name = None; status = Fetching_geo }
     | Fetching_search query ->
+      let open Lwt.Infix in
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
-          let+ result = geocoding query in
-          (match result with
-          | Ok (feature, attribution) -> Action.Confirming_search { feature; attribution; query }
-          | Error err -> Action.Errored err)
-          |> inject
-          |> schedule_event);
+          geocoding query
+          >|= (function
+                | Ok (feature, attribution) -> Action.Confirming_search { feature; attribution; query }
+                | Error err -> Action.Errored err)
+          >|= Fn.compose schedule_event inject);
       { weather = Ok None; place_name = None; status = Fetching_search }
     | Confirming_search x -> { weather = Ok None; place_name = None; status = Confirming_search x }
     | Fetching_weather { place_name; position = { longitude; latitude } } ->
+      let open Lwt.Infix in
       Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
-          let+ result = Weather.get_weather ~longitude ~latitude in
-          (match result with
-          | Ok weather -> Action.Fetched_weather { place_name; weather }
-          | Error err -> Action.Errored err)
-          |> inject
-          |> schedule_event);
+          Weather.get_weather ~longitude ~latitude
+          >|= (function
+                | Ok weather -> Action.Fetched_weather { place_name; weather }
+                | Error err -> Action.Errored err)
+          >|= Fn.compose schedule_event inject);
       { weather = Ok None; place_name = Some place_name; status = Fetching_weather }
     | Fetched_weather { place_name; weather } ->
       { weather = Ok (Some weather); place_name = Some place_name; status = Completed place_name }
@@ -238,10 +339,10 @@ let component =
                 [ Node.text "Enter address manually" ];
             ]
         | Blank_search text ->
+          let open Js_of_ocaml in
           let input_id = "search-box" in
           let handler_toggle _evt = inject Action.Blank_geo in
           let handler_search _evt =
-            let open Js_of_ocaml in
             Dom_html.getElementById_opt input_id
             |> Option.value_map ~default:Event.Ignore ~f:(fun el ->
                    let query = (Js.Unsafe.coerce el)##.value |> Js.to_string |> String.strip in
@@ -253,6 +354,10 @@ let component =
             | Some "Enter" -> handler_search evt
             | _ -> Event.Ignore
           in
+          Js_of_ocaml_lwt.Lwt_js_events.async (fun () ->
+              Dom_html.getElementById_coerce input_id Dom_html.CoerceTo.input
+              |> Option.iter ~f:(fun el -> el##focus);
+              Lwt.return_unit);
           Node.div []
             [
               Node.input
@@ -330,7 +435,7 @@ let component =
             [
               Node.div
                 Attr.[ classes [ "alert"; "alert-danger" ]; style Css_gen.(max_width (`Em 40)) ]
-                [ Node.textf !"%{Error.to_string_hum}" err ];
+                [ Errors.to_div err ];
               status_node;
             ]
         | Ok _ -> Node.div [] [ Node.div [] []; status_node ]

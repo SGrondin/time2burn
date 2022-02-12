@@ -107,8 +107,10 @@ let get_weather ~latitude ~longitude =
       let* res, body = Client.get uri in
       let+ raw = Body.to_string body in
       match Response.status res |> Code.code_of_status with
-      | 200 -> Yojson.Safe.from_string raw |> [%of_yojson: t] |> Result.map_error ~f:Error.of_string
+      | 200 -> Yojson.Safe.from_string raw |> [%of_yojson: t] |> Result.map_error ~f:(fun s -> `Text s)
       | code ->
         print_endline raw;
         failwithf "Could not get weather data. Error %d" code ())
-    (fun exn -> Or_error.of_exn exn |> Lwt.return)
+    (function
+      | Failure msg -> Lwt.return_error (`Text msg)
+      | exn -> Lwt.return_error (`Text (Exn.to_string exn)))

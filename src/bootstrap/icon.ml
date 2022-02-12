@@ -42,11 +42,13 @@ let svg ?(width = 1.0) ?(height = 1.0) ?(bold = false) ?fill ?(container = Div) 
   in
   let html =
     sprintf
-      {svg|<svg width="%frem" height="%frem" viewBox="%d %d %d %d" class="%s" %s fill=%s xmlns="http://www.w3.org/2000/svg">
+      {svg|<svg width="%srem" height="%srem" viewBox="%d %d %d %d" class="%s" %s fill=%s xmlns="http://www.w3.org/2000/svg">
 %s
 </svg>
 |svg}
-      width height v1 v2 v3 v4
+      (Float.to_string_hum ~strip_zero:true ~decimals:3 width)
+      (Float.to_string_hum ~strip_zero:true ~decimals:3 height)
+      v1 v2 v3 v4
       (String.concat ~sep:" " raw_extra_classes)
       (if bold then sprintf {|stroke=%s stroke-width="0.75"|} fill else "")
       fill paths
