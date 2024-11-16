@@ -84,7 +84,7 @@ type t = {
 
 let openweather_api_key = "7d892e70cd3986f7e4bd3f32c58dc8a6"
 
-let weather_uri = Uri.of_string "https://api.openweathermap.org/data/2.5/onecall"
+let weather_uri = Uri.of_string "https://api.openweathermap.org/data/3.0/onecall"
 
 open Cohttp
 open Cohttp_lwt_jsoo
